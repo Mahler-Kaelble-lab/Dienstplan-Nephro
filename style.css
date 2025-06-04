@@ -1,0 +1,11 @@
+## 🎨 style.css (optional)
+```css
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f9f9f9;
+  padding: 20px;
+  color: #333;
+}
+h1 {
+  color: #004080;
+}
