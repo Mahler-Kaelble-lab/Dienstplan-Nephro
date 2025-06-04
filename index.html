@@ -1,15 +1,306 @@
-```html
 <!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <title>Dienstplan</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Dienstplan Nephrologie Uniklinik Heidelberg</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333; }
+    h1 { color: #004080; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 20px; }
+    th, td { border: 1px solid #999; padding: 4px; text-align: center; }
+    th { background-color: #f0f0f0; }
+    td { min-width: 70px; } /* Angepasst für potenziell längere Namen */
+    .form-section { margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; background-color: #fff; }
+    label { display: inline-block; min-width: 100px; margin-bottom: 5px; }
+    ul { padding-left: 20px; }
+    li { margin-bottom: 5px; }
+    .button-group button { margin-right: 10px; padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .button-group button:hover { background-color: #0056b3; }
+    .form-section button { padding: 5px 10px; background-color: #28a745; color: white; border: none; border-radius: 3px; cursor: pointer; margin-left: 5px;}
+    .form-section button:hover { background-color: #218838; }
+    .form-section button.remove-btn { background-color: #dc3545; }
+    .form-section button.remove-btn:hover { background-color: #c82333; }
+  </style>
 </head>
 <body>
-  <h1>Dienstplan für Oktober bis März</h1>
-  <p>Hier wird automatisch der aktuelle Dienstplan erzeugt...</p>
-  <script src="main.js"></script>
+
+<h1>Dienstplan Nephrologie Uniklinik Heidelberg</h1>
+
+<div class="form-section">
+  <h2>Ärzteliste verwalten</h2>
+  <input type="text" id="arztName" placeholder="Name des Arztes/der Ärztin" style="width: 250px;" />
+  <br><br>
+  <strong>Kompetenzen (kann):</strong><br>
+  <label><input type="checkbox" id="can_station"> Station</label>
+  <label><input type="checkbox" id="can_sono"> Sono</label>
+  <label><input type="checkbox" id="can_pd"> PD</label>
+  <label><input type="checkbox" id="can_dialyse"> Dialyse</label>
+  <label><input type="checkbox" id="can_akut"> Akut</label>
+  <label><input type="checkbox" id="can_ambulanz"> Ambulanz</label>
+  <br><br>
+  <strong>Wunschdienste:</strong><br>
+  <label><input type="checkbox" id="wish_station"> Station</label>
+  <label><input type="checkbox" id="wish_sono"> Sono</label>
+  <label><input type="checkbox" id="wish_pd"> PD</label>
+  <label><input type="checkbox" id="wish_dialyse"> Dialyse</label>
+  <label><input type="checkbox" id="wish_akut"> Akut</label>
+  <label><input type="checkbox" id="wish_ambulanz"> Ambulanz</label>
+  <br><br>
+  <label>Urlaub von:</label> <input type="date" id="urlaubVon" />
+  <label>bis:</label> <input type="date" id="urlaubBis" /> <button onclick="addUrlaub()">➕ Urlaub hinzufügen</button>
+  <ul id="urlaubListe"></ul>
+  <button onclick="addDoctor()" style="margin-top: 10px;">➕ Arzt/Ärztin zur Liste hinzufügen</button>
+  <ul id="arztListe" style="margin-top: 15px;"></ul>
+</div>
+
+<div class="form-section">
+  <h2>Dienstplan erstellen</h2>
+  <label for="planJahr">Jahr:</label>
+  <input type="number" id="planJahr" value="2025" min="2020" max="2099">
+  <div class="button-group" style="margin-top:15px;">
+    <button id="dienstplanOktMaerzBtn">📅 Dienstplan Oktober - März erstellen</button>
+    <button id="dienstplanAprSeptBtn">📅 Dienstplan April - September erstellen</button>
+  </div>
+</div>
+
+<button onclick="downloadCSV()" style="padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 15px;">⬇️ Dienstplan als CSV exportieren</button>
+<pre id="wochenStatistik" style="margin-top: 15px; font-size: 10px; color: #666;"></pre>
+<table id="dienstplanTable"></table>
+
+<script>
+let doctors = [];
+let tempUrlaub = [];
+
+function addUrlaub() {
+  const von = document.getElementById("urlaubVon").value;
+  const bis = document.getElementById("urlaubBis").value;
+  if (!von || !bis || von > bis) {
+    alert("Bitte gültiges Start- und Enddatum für den Urlaub eingeben.");
+    return;
+  }
+  const current = new Date(von);
+  const end = new Date(bis);
+  while (current <= end) {
+    const d = current.toISOString().split("T")[0];
+    if (!tempUrlaub.includes(d)) tempUrlaub.push(d);
+    current.setDate(current.getDate() + 1);
+  }
+  renderUrlaub();
+}
+
+function renderUrlaub() {
+  const ul = document.getElementById("urlaubListe");
+  ul.innerHTML = "";
+  tempUrlaub.sort();
+  tempUrlaub.forEach((d, i) => {
+    const li = document.createElement("li");
+    li.textContent = d;
+    const btn = document.createElement("button");
+    btn.textContent = "✖";
+    btn.className = "remove-btn"; // Klasse für Styling
+    btn.style.marginLeft = "10px";
+    btn.onclick = () => { tempUrlaub.splice(i, 1); renderUrlaub(); };
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+}
+
+function addDoctor() {
+  const name = document.getElementById("arztName").value.trim();
+  if (!name) {
+    alert("Bitte einen Namen für den Arzt/die Ärztin eingeben.");
+    return;
+  }
+  const doctor = {
+    name,
+    can: {
+      station: document.getElementById("can_station").checked,
+      sono: document.getElementById("can_sono").checked,
+      pd: document.getElementById("can_pd").checked,
+      dialyse: document.getElementById("can_dialyse").checked,
+      akut: document.getElementById("can_akut").checked,
+      ambulanz: document.getElementById("can_ambulanz").checked
+    },
+    wish: {
+      station: document.getElementById("wish_station").checked,
+      sono: document.getElementById("wish_sono").checked,
+      pd: document.getElementById("wish_pd").checked,
+      dialyse: document.getElementById("wish_dialyse").checked,
+      akut: document.getElementById("wish_akut").checked,
+      ambulanz: document.getElementById("wish_ambulanz").checked
+    },
+    urlaub: [...tempUrlaub]
+  };
+  doctors.push(doctor);
+  tempUrlaub = [];
+  document.getElementById("arztName").value = "";
+  document.querySelectorAll(".form-section input[type=checkbox]").forEach(cb => cb.checked = false);
+  document.getElementById("urlaubVon").value = "";
+  document.getElementById("urlaubBis").value = "";
+  renderUrlaub();
+  renderDoctors();
+}
+
+function renderDoctors() {
+  const list = document.getElementById("arztListe");
+  list.innerHTML = "";
+  doctors.forEach((doc, index) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<strong>${doc.name}</strong><br>
+      Kann: ${Object.entries(doc.can).filter(([_, v]) => v).map(([k]) => k).join(", ") || "Nichts ausgewählt"}<br>
+      Wunsch: ${Object.entries(doc.wish).filter(([_, v]) => v).map(([k]) => k).join(", ") || "Nichts ausgewählt"}<br>
+      Urlaub: ${doc.urlaub.join(", ") || "Kein Urlaub eingetragen"}`;
+    const btn = document.createElement("button");
+    btn.textContent = "✖ Entfernen";
+    btn.className = "remove-btn"; // Klasse für Styling
+    btn.style.marginLeft = "10px";
+    btn.onclick = () => {
+      if (confirm(`Soll ${doc.name} wirklich entfernt werden?`)) {
+        doctors.splice(index, 1);
+        renderDoctors();
+      }
+    };
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+
+function downloadCSV() {
+  const table = document.getElementById("dienstplanTable");
+  if (table.rows.length === 0) {
+    alert("Es gibt keinen Dienstplan zum Exportieren.");
+    return;
+  }
+  let csv = "";
+  for (const row of table.rows) {
+    const cells = [...row.cells].map(cell => '"' + cell.textContent.replace(/"/g, '""') + '"');
+    csv += cells.join(";") + "\n";
+  }
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "dienstplan.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+window.onload = function () {
+  // Beispielärzte für Demo-Zwecke, wenn keine vorhanden sind
+  if (doctors.length === 0) {
+    doctors = Array.from({ length: 15 }, (_, i) => ({
+      name: `Arzt ${i + 1}`,
+      can: {
+        station: Math.random() > 0.2,
+        sono: Math.random() > 0.5,
+        pd: Math.random() > 0.5,
+        dialyse: Math.random() > 0.3,
+        akut: true,
+        ambulanz: Math.random() > 0.4
+      },
+      wish: {
+        station: Math.random() > 0.7,
+        sono: Math.random() > 0.8,
+        pd: Math.random() > 0.8,
+        dialyse: Math.random() > 0.7,
+        akut: Math.random() > 0.5,
+        ambulanz: Math.random() > 0.6
+      },
+      urlaub: []
+    }));
+  }
+
+  renderDoctors();
+  document.getElementById("dienstplanOktMaerzBtn").onclick = () => generateDienstplan("okt-maerz");
+  document.getElementById("dienstplanAprSeptBtn").onclick = () => generateDienstplan("apr-sept");
+};
+
+function generateDienstplan(periode) {
+  const jahr = parseInt(document.getElementById("planJahr").value);
+  if (isNaN(jahr) || jahr < 2000 || jahr > 2099) {
+    alert("Bitte ein gültiges Jahr eingeben.");
+    return;
+  }
+
+  if (doctors.length === 0) {
+    alert("Bitte fügen Sie zuerst Ärzte zur Liste hinzu.");
+    return;
+  }
+
+  const table = document.getElementById("dienstplanTable");
+  table.innerHTML = "";
+  const header = table.insertRow();
+  header.insertCell().textContent = "Datum";
+  header.insertCell().textContent = "Wochentag";
+  header.insertCell().textContent = "Akut";
+  header.insertCell().textContent = "Station 1";
+  header.insertCell().textContent = "Station 2";
+  header.insertCell().textContent = "Station 3";
+  header.insertCell().textContent = "Sono";
+  header.insertCell().textContent = "PD";
+  header.insertCell().textContent = "Dialyse";
+  header.insertCell().textContent = "Ambulanz";
+
+  let startMonth, endMonth;
+  let currentYearForPeriod = jahr;
+
+  if (periode === "okt-maerz") {
+    startMonth = 9; // Oktober (0-indexed)
+    endMonth = 2;   // März (des Folgejahres)
+    // Wenn der Zeitraum über den Jahreswechsel geht, beginnt er im angegebenen Jahr
+    // und endet im Folgejahr
+    // Die endDate wird unten korrekt berechnet, wenn sie im Folgejahr liegt
+  } else { // apr-sept
+    startMonth = 3; // April
+    endMonth = 8;   // September
+  }
+
+  const startDate = new Date(currentYearForPeriod, startMonth, 1);
+  // Wenn der Endmonat kleiner ist als der Startmonat, bedeutet dies einen Jahresübergang.
+  // Dann ist das Endjahr das Startjahr + 1. Ansonsten ist es das Startjahr.
+  const endYearForPeriod = (endMonth < startMonth) ? currentYearForPeriod + 1 : currentYearForPeriod;
+  const endDate = new Date(endYearForPeriod, endMonth + 1, 0); // Letzter Tag des Endmonats
+
+  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const wd = d.toLocaleDateString("de-DE", { weekday: "long" });
+    const row = table.insertRow();
+    row.insertCell().textContent = dateStr;
+    row.insertCell().textContent = wd;
+
+    const dienstTypenUndAnzahl = [
+      { typ: "akut", anzahl: 1, name: "Akut" },
+      { typ: "station", anzahl: 3, name: "Station" },
+      { typ: "sono", anzahl: 1, name: "Sono" },
+      { typ: "pd", anzahl: (wd === "Samstag" || wd === "Sonntag") ? 0 : 1, name: "PD" },
+      { typ: "dialyse", anzahl: (wd === "Sonntag") ? 0 : 1, name: "Dialyse" },
+      { typ: "ambulanz", anzahl: (wd === "Samstag" || wd === "Sonntag") ? 0 : 1, name: "Ambulanz" }
+    ];
+
+    dienstTypenUndAnzahl.forEach(dienstInfo => {
+      for (let i = 0; i < dienstInfo.anzahl; i++) {
+        const cell = row.insertCell();
+        let verfuegbareAerzte = doctors.filter(doc => doc.can[dienstInfo.typ] && !doc.urlaub.includes(dateStr));
+
+        // Hier (oder davor) müsste die Logik für Arbeitszeitgesetze ansetzen:
+        // z.B. verfuegbareAerzte = verfuegbareAerzte.filter(doc => checkArbeitszeitUndRuhezeit(doc, dateStr, dienstInfo.typ));
+        // Dies würde individuelle Ärzte basierend auf ihren bisherigen Diensten und Arbeitszeiten filtern.
+
+        const aerzteMitWunsch = verfuegbareAerzte.filter(doc => doc.wish[dienstInfo.typ]);
+
+        let ausgewaehlterArzt = null;
+        if (aerzteMitWunsch.length > 0) {
+          ausgewaehlterArzt = aerzteMitWunsch[Math.floor(Math.random() * aerzteMitWunsch.length)];
+        } else if (verfuegbareAerzte.length > 0) {
+          ausgewaehlterArzt = verfuegbareAerzte[Math.floor(Math.random() * verfuegbareAerzte.length)];
+        }
+        
+        cell.textContent = ausgewaehlterArzt ? ausgewaehlterArzt.name : "-";
+      }
+    });
+  }
+}
+</script>
+
 </body>
 </html>
-```
