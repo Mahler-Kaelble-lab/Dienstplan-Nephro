@@ -6,10 +6,10 @@
   <style>
     body { font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333; }
     h1 { color: #004080; }
-    table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 20px; }
-    th, td { border: 1px solid #999; padding: 4px; text-align: center; }
+    table { border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 20px; table-layout: fixed; }
+    th, td { border: 1px solid #999; padding: 4px; text-align: center; word-wrap: break-word; }
     th { background-color: #f0f0f0; }
-    td { min-width: 70px; } /* Angepasst für potenziell längere Namen */
+    td { min-width: 60px; }
     .form-section { margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; background-color: #fff; }
     label { display: inline-block; min-width: 100px; margin-bottom: 5px; }
     ul { padding-left: 20px; }
@@ -20,6 +20,10 @@
     .form-section button:hover { background-color: #218838; }
     .form-section button.remove-btn { background-color: #dc3545; }
     .form-section button.remove-btn:hover { background-color: #c82333; }
+    .highlight-akut-frei { background-color: #e6e6fa; }
+    .highlight-urlaub { background-color: #fffacd; }
+    .akut-frei-detail {font-size: 0.9em; color: #444;}
+    .holiday { background-color: #d1e7dd; } 
   </style>
 </head>
 <body>
@@ -29,13 +33,15 @@
 <div class="form-section">
   <h2>Ärzteliste verwalten</h2>
   <input type="text" id="arztName" placeholder="Name des Arztes/der Ärztin" style="width: 250px;" />
+  <br>
+  <label><input type="checkbox" id="isDesignatedForAkutRotation">  Für Akut-Dienst-Rotation vorgesehen?</label>
   <br><br>
   <strong>Kompetenzen (kann):</strong><br>
   <label><input type="checkbox" id="can_station"> Station</label>
   <label><input type="checkbox" id="can_sono"> Sono</label>
   <label><input type="checkbox" id="can_pd"> PD</label>
   <label><input type="checkbox" id="can_dialyse"> Dialyse</label>
-  <label><input type="checkbox" id="can_akut"> Akut</label>
+  <label><input type="checkbox" id="can_akut" checked> Akut (generelle Kompetenz)</label>
   <label><input type="checkbox" id="can_ambulanz"> Ambulanz</label>
   <br><br>
   <strong>Wunschdienste:</strong><br>
@@ -43,7 +49,7 @@
   <label><input type="checkbox" id="wish_sono"> Sono</label>
   <label><input type="checkbox" id="wish_pd"> PD</label>
   <label><input type="checkbox" id="wish_dialyse"> Dialyse</label>
-  <label><input type="checkbox" id="wish_akut"> Akut</label>
+  <label><input type="checkbox" id="wish_akut"> Akut (generell)</label>
   <label><input type="checkbox" id="wish_ambulanz"> Ambulanz</label>
   <br><br>
   <label>Urlaub von:</label> <input type="date" id="urlaubVon" />
@@ -64,12 +70,51 @@
 </div>
 
 <button onclick="downloadCSV()" style="padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 15px;">⬇️ Dienstplan als CSV exportieren</button>
-<pre id="wochenStatistik" style="margin-top: 15px; font-size: 10px; color: #666;"></pre>
 <table id="dienstplanTable"></table>
 
 <script>
 let doctors = [];
 let tempUrlaub = [];
+
+let akutRotationManager = {
+    designatedAkutPoolIndices: [],      
+    nextDesignatedToStartFDIndex: 0,    
+    activeAkutSlots: []                 
+};
+
+let weekendStationDoctorName = null; 
+const AKUT_CYCLE_COOLDOWN_DAYS = 28; 
+
+function getISOWeek(date) {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+function getWeekendIdentifier(date) {
+    const tempDate = new Date(date);
+    const dayOfWeek = tempDate.getDay(); 
+    let saturdayDate = new Date(tempDate);
+    if (dayOfWeek === 0) { 
+        saturdayDate.setDate(tempDate.getDate() - 1);
+    } else { 
+        saturdayDate.setDate(tempDate.getDate() + (6 - dayOfWeek));
+    }
+    return `${saturdayDate.getFullYear()}-W${getISOWeek(saturdayDate)}`;
+}
+
+function getGermanHolidays(year) {
+    const holidays = [
+        `${year}-01-01`, `${year}-05-01`, `${year}-10-03`, `${year}-12-25`, `${year}-12-26`,
+        `${year}-01-06`, `${year}-11-01`, 
+    ];
+    if (year === 2025) holidays.push("2025-04-18", "2025-04-21", "2025-05-29", "2025-06-09", "2025-06-19");
+    else if (year === 2026) holidays.push("2026-04-03", "2026-04-06", "2026-05-14", "2026-05-25", "2026-06-04");
+    return holidays;
+}
+
 
 function addUrlaub() {
   const von = document.getElementById("urlaubVon").value;
@@ -97,7 +142,7 @@ function renderUrlaub() {
     li.textContent = d;
     const btn = document.createElement("button");
     btn.textContent = "✖";
-    btn.className = "remove-btn"; // Klasse für Styling
+    btn.className = "remove-btn";
     btn.style.marginLeft = "10px";
     btn.onclick = () => { tempUrlaub.splice(i, 1); renderUrlaub(); };
     li.appendChild(btn);
@@ -113,12 +158,13 @@ function addDoctor() {
   }
   const doctor = {
     name,
+    isDesignatedForAkutRotation: document.getElementById("isDesignatedForAkutRotation").checked,
     can: {
       station: document.getElementById("can_station").checked,
       sono: document.getElementById("can_sono").checked,
       pd: document.getElementById("can_pd").checked,
       dialyse: document.getElementById("can_dialyse").checked,
-      akut: document.getElementById("can_akut").checked,
+      akut: document.getElementById("can_akut").checked, 
       ambulanz: document.getElementById("can_ambulanz").checked
     },
     wish: {
@@ -129,12 +175,16 @@ function addDoctor() {
       akut: document.getElementById("wish_akut").checked,
       ambulanz: document.getElementById("wish_ambulanz").checked
     },
-    urlaub: [...tempUrlaub]
+    urlaub: [...tempUrlaub], 
+    lastWorkedWeekendIdentifier: null,
+    akutCycleCooldownEndDate: null 
   };
   doctors.push(doctor);
-  tempUrlaub = [];
+  tempUrlaub = []; 
   document.getElementById("arztName").value = "";
   document.querySelectorAll(".form-section input[type=checkbox]").forEach(cb => cb.checked = false);
+  document.getElementById("isDesignatedForAkutRotation").checked = false; 
+  document.getElementById("can_akut").checked = true; 
   document.getElementById("urlaubVon").value = "";
   document.getElementById("urlaubBis").value = "";
   renderUrlaub();
@@ -146,13 +196,15 @@ function renderDoctors() {
   list.innerHTML = "";
   doctors.forEach((doc, index) => {
     const li = document.createElement("li");
-    li.innerHTML = `<strong>${doc.name}</strong><br>
+    let akutRotationText = doc.isDesignatedForAkutRotation ? " (für Akut-Rotation vorgesehen)" : "";
+    const wishedUrlaub = doc.urlaub.filter(uDate => !uDate.startsWith("auto_")); 
+    li.innerHTML = `<strong>${doc.name}</strong>${akutRotationText}<br>
       Kann: ${Object.entries(doc.can).filter(([_, v]) => v).map(([k]) => k).join(", ") || "Nichts ausgewählt"}<br>
       Wunsch: ${Object.entries(doc.wish).filter(([_, v]) => v).map(([k]) => k).join(", ") || "Nichts ausgewählt"}<br>
-      Urlaub: ${doc.urlaub.join(", ") || "Kein Urlaub eingetragen"}`;
+      Urlaub: ${wishedUrlaub.join(", ") || "Kein Urlaub eingetragen"}`;
     const btn = document.createElement("button");
     btn.textContent = "✖ Entfernen";
-    btn.className = "remove-btn"; // Klasse für Styling
+    btn.className = "remove-btn";
     btn.style.marginLeft = "10px";
     btn.onclick = () => {
       if (confirm(`Soll ${doc.name} wirklich entfernt werden?`)) {
@@ -186,121 +238,459 @@ function downloadCSV() {
 }
 
 window.onload = function () {
-  // Beispielärzte für Demo-Zwecke, wenn keine vorhanden sind
-  if (doctors.length === 0) {
-    doctors = Array.from({ length: 15 }, (_, i) => ({
-      name: `Arzt ${i + 1}`,
-      can: {
-        station: Math.random() > 0.2,
-        sono: Math.random() > 0.5,
-        pd: Math.random() > 0.5,
-        dialyse: Math.random() > 0.3,
-        akut: true,
-        ambulanz: Math.random() > 0.4
-      },
-      wish: {
-        station: Math.random() > 0.7,
-        sono: Math.random() > 0.8,
-        pd: Math.random() > 0.8,
-        dialyse: Math.random() > 0.7,
-        akut: Math.random() > 0.5,
-        ambulanz: Math.random() > 0.6
-      },
-      urlaub: []
-    }));
+  if (doctors.length === 0) { 
+    const allRounderCompetencies = { akut: true, station: true, sono: true, pd: true, dialyse: true, ambulanz: true };
+    const limitedCompetencies = { sono: true, station: true, ambulanz: true, akut: false, pd: false, dialyse: false };
+    doctors = [
+      { name: "Abdulaziz", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Berger", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Di Tomaso", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Kadric", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Mahler", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Mueller", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Nguyen", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Schoeter", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Selt", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Taut", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Ujszaszi", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Zimmermann", isDesignatedForAkutRotation: false, can: { ...allRounderCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Leber", isDesignatedForAkutRotation: false, can: { ...limitedCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Niromand", isDesignatedForAkutRotation: false, can: { ...limitedCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Tress", isDesignatedForAkutRotation: false, can: { ...limitedCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+      { name: "Reingruber", isDesignatedForAkutRotation: false, can: { ...limitedCompetencies }, wish: {}, urlaub: [], lastWorkedWeekendIdentifier: null, akutCycleCooldownEndDate: null },
+    ];
   }
-
+  document.getElementById("can_akut").checked = true; 
   renderDoctors();
   document.getElementById("dienstplanOktMaerzBtn").onclick = () => generateDienstplan("okt-maerz");
   document.getElementById("dienstplanAprSeptBtn").onclick = () => generateDienstplan("apr-sept");
 };
 
+function tryToAddNextAkutDoctorToFD(mondayDate) {
+    if (akutRotationManager.designatedAkutPoolIndices.length === 0) return;
+    let attempts = 0;
+    const numDesignated = akutRotationManager.designatedAkutPoolIndices.length;
+
+    while (attempts < numDesignated) {
+        const doctorPoolIndex = akutRotationManager.nextDesignatedToStartFDIndex;
+        const doctorGlobalIndex = akutRotationManager.designatedAkutPoolIndices[doctorPoolIndex];
+        const doctor = doctors[doctorGlobalIndex];
+
+        const isAlreadyActive = akutRotationManager.activeAkutSlots.some(
+            slot => slot.doctorIndex === doctorGlobalIndex && slot.currentPhase !== 'frei_zyklus'
+        );
+        let isPotentiallyOnUrlaubFDWeek = false;
+        for (let i = 0; i < 7; i++) {
+            const checkDate = new Date(mondayDate);
+            checkDate.setDate(mondayDate.getDate() + i);
+            if (doctor.urlaub.includes(checkDate.toISOString().split("T")[0])) {
+                isPotentiallyOnUrlaubFDWeek = true; break;
+            }
+        }
+        const isInCooldown = doctor.akutCycleCooldownEndDate && mondayDate < doctor.akutCycleCooldownEndDate;
+
+        if (!isAlreadyActive && !isPotentiallyOnUrlaubFDWeek && !isInCooldown) {
+            akutRotationManager.activeAkutSlots.push({
+                doctorIndex: doctorGlobalIndex, currentPhase: 'frueh', blockStartDate: new Date(mondayDate) 
+            });
+            doctor.akutCycleCooldownEndDate = null; 
+            akutRotationManager.nextDesignatedToStartFDIndex = (doctorPoolIndex + 1) % numDesignated;
+            return; 
+        }
+        akutRotationManager.nextDesignatedToStartFDIndex = (doctorPoolIndex + 1) % numDesignated;
+        attempts++;
+    }
+}
+
+function initializeAkutRotationManager(planStartDate) {
+    doctors.forEach(doc => {
+        doc.lastWorkedWeekendIdentifier = null;
+        doc.akutCycleCooldownEndDate = null; 
+    }); 
+    akutRotationManager.activeAkutSlots = []; 
+    akutRotationManager.designatedAkutPoolIndices = doctors
+        .map((doc, index) => doc.isDesignatedForAkutRotation ? index : -1)
+        .filter(index => index !== -1);
+    akutRotationManager.nextDesignatedToStartFDIndex = 0;
+
+    if (akutRotationManager.designatedAkutPoolIndices.length > 0) {
+        let firstMondayForAkutCycle = new Date(planStartDate);
+         while (firstMondayForAkutCycle.getDay() !== 1) { 
+            firstMondayForAkutCycle.setDate(firstMondayForAkutCycle.getDate() + 1);
+        }
+        tryToAddNextAkutDoctorToFD(firstMondayForAkutCycle); 
+    }
+    if (akutRotationManager.designatedAkutPoolIndices.length < 4 && akutRotationManager.designatedAkutPoolIndices.length > 0) {
+        alert("Warnung: Es sind weniger als 4 Ärzte für die Akut-Rotation vorgesehen. Ein kontinuierlicher Zyklus mit FD, SD, ND und Frei durch dedizierte Rotationsärzte ist so nicht immer gewährleistet.");
+    }
+}
+
+function advanceAkutRotation(currentDateInput) { 
+    if (akutRotationManager.designatedAkutPoolIndices.length === 0) return;
+    
+    const currentDate = new Date(currentDateInput.getFullYear(), currentDateInput.getMonth(), currentDateInput.getDate());
+    const nextDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + 1);
+
+    for (let i = akutRotationManager.activeAkutSlots.length - 1; i >= 0; i--) {
+        const slot = akutRotationManager.activeAkutSlots[i];
+        const slotBlockStartDate = new Date(slot.blockStartDate.getFullYear(), slot.blockStartDate.getMonth(), slot.blockStartDate.getDate());
+        
+        const sevenDaysAfterBlockStart = new Date(slotBlockStartDate);
+        sevenDaysAfterBlockStart.setDate(slotBlockStartDate.getDate() + 7);
+
+        const isExactlySevenDaysLater = 
+            nextDay.getFullYear() === sevenDaysAfterBlockStart.getFullYear() &&
+            nextDay.getMonth() === sevenDaysAfterBlockStart.getMonth() &&
+            nextDay.getDate() === sevenDaysAfterBlockStart.getDate();
+
+        // Debugging logs (can be removed after testing)
+        // console.log(`ADVANCE CHECK: Doctor: ${doctors[slot.doctorIndex].name}, Phase: ${slot.currentPhase}, BlockStart: ${slotBlockStartDate.toISOString().split("T")[0]}, NextDay: ${nextDay.toISOString().split("T")[0]}, is7DaysLater: ${isExactlySevenDaysLater}, nextDayIsMonday: ${nextDay.getDay() === 1}`);
+
+        if (isExactlySevenDaysLater && nextDay.getDay() === 1) { 
+            const oldPhase = slot.currentPhase;
+            slot.blockStartDate = new Date(nextDay); 
+
+            switch (oldPhase) {
+                case 'frueh':       slot.currentPhase = 'spaet_block'; break;
+                case 'spaet_block': slot.currentPhase = 'nacht';       break;
+                case 'nacht':       slot.currentPhase = 'frei_zyklus'; break;
+                case 'frei_zyklus':
+                    const doctorWhoFinished = doctors[slot.doctorIndex];
+                    doctorWhoFinished.akutCycleCooldownEndDate = new Date(nextDay.getTime() + (AKUT_CYCLE_COOLDOWN_DAYS -1) * 24*60*60*1000); 
+                    akutRotationManager.activeAkutSlots.splice(i, 1);
+                    // console.log(`ADVANCE ACTION: Doctor: ${doctorWhoFinished.name} FINISHED CYCLE. Cooldown until: ${doctorWhoFinished.akutCycleCooldownEndDate?.toISOString().split("T")[0]}`);
+                    continue; 
+            }
+            // console.log(`ADVANCE ACTION: Doctor: ${doctors[slot.doctorIndex].name} transitioned from ${oldPhase} to ${slot.currentPhase}. New BlockStart: ${slot.blockStartDate.toISOString().split("T")[0]}`);
+            if (oldPhase === 'frueh' && slot.currentPhase === 'spaet_block') {
+                tryToAddNextAkutDoctorToFD(new Date(nextDay)); 
+                break; // Added break as requested
+            }
+        }
+    }
+}
+
+function getLastMondayOfMonth(year, month_idx_0_based) {
+    const firstOfNextMonth = new Date(year, month_idx_0_based + 1, 1);
+    const lastDayOfMonth = new Date(firstOfNextMonth);
+    lastDayOfMonth.setDate(firstOfNextMonth.getDate() - 1);
+    let lastMonday = new Date(lastDayOfMonth);
+    if (lastMonday.getDay() === 0) { 
+        lastMonday.setDate(lastMonday.getDate() - 6);
+    } else { 
+        lastMonday.setDate(lastMonday.getDate() - (lastMonday.getDay() - 1));
+    }
+    return lastMonday;
+}
+
+
 function generateDienstplan(periode) {
   const jahr = parseInt(document.getElementById("planJahr").value);
   if (isNaN(jahr) || jahr < 2000 || jahr > 2099) {
-    alert("Bitte ein gültiges Jahr eingeben.");
-    return;
+    alert("Bitte ein gültiges Jahr eingeben."); return;
   }
-
   if (doctors.length === 0) {
-    alert("Bitte fügen Sie zuerst Ärzte zur Liste hinzu.");
-    return;
+    alert("Bitte fügen Sie zuerst Ärzte zur Liste hinzu."); return;
   }
 
   const table = document.getElementById("dienstplanTable");
   table.innerHTML = "";
   const header = table.insertRow();
-  header.insertCell().textContent = "Datum";
-  header.insertCell().textContent = "Wochentag";
-  header.insertCell().textContent = "Akut";
-  header.insertCell().textContent = "Station 1";
-  header.insertCell().textContent = "Station 2";
-  header.insertCell().textContent = "Station 3";
-  header.insertCell().textContent = "Sono";
-  header.insertCell().textContent = "PD";
-  header.insertCell().textContent = "Dialyse";
-  header.insertCell().textContent = "Ambulanz";
+  ["Datum", "Wochentag", "Akut Früh", "Akut Spät", "Akut Nacht", "Station 1", "Station 2", "Station 3", "Sono", "PD", "Dialyse", "Ambulanz", "Im Urlaub", "Akut-Frei"]
+    .forEach(text => header.insertCell().textContent = text);
 
-  let startMonth, endMonth;
+  let overallPlanStartDate;
+  let actualPlanEndDate;
   let currentYearForPeriod = jahr;
 
   if (periode === "okt-maerz") {
-    startMonth = 9; // Oktober (0-indexed)
-    endMonth = 2;   // März (des Folgejahres)
-    // Wenn der Zeitraum über den Jahreswechsel geht, beginnt er im angegebenen Jahr
-    // und endet im Folgejahr
-    // Die endDate wird unten korrekt berechnet, wenn sie im Folgejahr liegt
+    overallPlanStartDate = getLastMondayOfMonth(jahr, 8); 
+    actualPlanEndDate = new Date(jahr + 1, 2, 31); 
+    currentYearForPeriod = jahr; 
   } else { // apr-sept
-    startMonth = 3; // April
-    endMonth = 8;   // September
+    overallPlanStartDate = getLastMondayOfMonth(jahr, 2); 
+    actualPlanEndDate = new Date(jahr, 8, 30); 
+    currentYearForPeriod = jahr;
+  }
+  
+  const holidaysForYear = getGermanHolidays(currentYearForPeriod);
+  if (overallPlanStartDate.getFullYear() !== actualPlanEndDate.getFullYear()) { 
+      holidaysForYear.push(...getGermanHolidays(actualPlanEndDate.getFullYear()));
   }
 
-  const startDate = new Date(currentYearForPeriod, startMonth, 1);
-  // Wenn der Endmonat kleiner ist als der Startmonat, bedeutet dies einen Jahresübergang.
-  // Dann ist das Endjahr das Startjahr + 1. Ansonsten ist es das Startjahr.
-  const endYearForPeriod = (endMonth < startMonth) ? currentYearForPeriod + 1 : currentYearForPeriod;
-  const endDate = new Date(endYearForPeriod, endMonth + 1, 0); // Letzter Tag des Endmonats
+  const requiredVacationDays = 15;
+  doctors.forEach(doc => {
+      let tempDocUrlaub = [...doc.urlaub]; 
+      let currentUrlaubInPeriod = tempDocUrlaub.filter(uDate => {
+          const d = new Date(uDate);
+          return d >= overallPlanStartDate && d <= actualPlanEndDate;
+      }).length;
+      let daysToAssign = requiredVacationDays - currentUrlaubInPeriod;
+      let attempts = 0;
+      const maxAttemptsPerDoctor = 100; 
 
-  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      while (daysToAssign >= 5 && attempts < maxAttemptsPerDoctor) {
+          let potentialWeekStart = new Date(overallPlanStartDate.getTime() + Math.random() * (actualPlanEndDate.getTime() - overallPlanStartDate.getTime() - 7 * 24*60*60*1000));
+          if (potentialWeekStart > actualPlanEndDate) { attempts++; continue;} 
+          while(potentialWeekStart.getDay() !== 1) { 
+              potentialWeekStart.setDate(potentialWeekStart.getDate() + 1);
+              if(potentialWeekStart > actualPlanEndDate) { break; }
+          }
+          if(potentialWeekStart > actualPlanEndDate) { attempts++; continue;}
+          let weekIsValid = true;
+          let weekDays = [];
+          for (let i=0; i<5; i++) {
+              let dayInWeek = new Date(potentialWeekStart);
+              dayInWeek.setDate(potentialWeekStart.getDate() + i);
+              if (dayInWeek > actualPlanEndDate) { weekIsValid = false; break;} 
+              const dayInWeekStr = dayInWeek.toISOString().split("T")[0];
+              if (tempDocUrlaub.includes(dayInWeekStr) || holidaysForYear.includes(dayInWeekStr) || dayInWeek.getDay() === 0 || dayInWeek.getDay() === 6) {
+                  weekIsValid = false; break;
+              }
+              weekDays.push(dayInWeekStr);
+          }
+          if (weekIsValid) {
+              weekDays.forEach(dStr => tempDocUrlaub.push(dStr));
+              tempDocUrlaub.sort();
+              daysToAssign -= 5;
+          }
+          attempts++;
+      }
+      attempts = 0; 
+      while (daysToAssign > 0 && attempts < maxAttemptsPerDoctor * 2) { 
+          const timeDiff = actualPlanEndDate.getTime() - overallPlanStartDate.getTime();
+          const randomTime = Math.random() * timeDiff;
+          const randomDate = new Date(overallPlanStartDate.getTime() + randomTime);
+          const randomDateStr = randomDate.toISOString().split("T")[0];
+          const dayOfWeek = randomDate.getDay(); 
+          if (dayOfWeek !== 0 && dayOfWeek !== 6 && !tempDocUrlaub.includes(randomDateStr) && !holidaysForYear.includes(randomDateStr)) {
+              tempDocUrlaub.push(randomDateStr); 
+              tempDocUrlaub.sort(); 
+              daysToAssign--;
+          }
+          attempts++;
+      }
+      doc.urlaub = [...new Set(tempDocUrlaub)]; 
+  });
+
+  initializeAkutRotationManager(new Date(overallPlanStartDate)); 
+  weekendStationDoctorName = null; 
+
+  for (let d = new Date(overallPlanStartDate); d <= actualPlanEndDate; d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().split("T")[0];
-    const wd = d.toLocaleDateString("de-DE", { weekday: "long" });
+    const wdNumber = d.getDay(); 
+    const wdText = d.toLocaleString("de-DE", { weekday: "long" });
     const row = table.insertRow();
+    const isHoliday = holidaysForYear.includes(dateStr);
+    if (isHoliday) row.classList.add("holiday");
     row.insertCell().textContent = dateStr;
-    row.insertCell().textContent = wd;
+    row.insertCell().textContent = wdText + (isHoliday ? " (Feiertag)" : "");
 
-    const dienstTypenUndAnzahl = [
-      { typ: "akut", anzahl: 1, name: "Akut" },
-      { typ: "station", anzahl: 3, name: "Station" },
-      { typ: "sono", anzahl: 1, name: "Sono" },
-      { typ: "pd", anzahl: (wd === "Samstag" || wd === "Sonntag") ? 0 : 1, name: "PD" },
-      { typ: "dialyse", anzahl: (wd === "Sonntag") ? 0 : 1, name: "Dialyse" },
-      { typ: "ambulanz", anzahl: (wd === "Samstag" || wd === "Sonntag") ? 0 : 1, name: "Ambulanz" }
+    let assignedDoctorsToday = new Set(); 
+    let arztInAkutFrei = "-"; 
+    let akutFreiDetail = "";  
+
+    const currentWeekendID = (wdNumber === 0 || wdNumber === 6) ? getWeekendIdentifier(d) : null;
+    const previousWeekendID = (wdNumber === 0 || wdNumber === 6) ? getWeekendIdentifier(new Date(d.getTime() - 7 * 24 * 60 * 60 * 1000)) : null;
+    
+    const akutFruehCell = row.insertCell();
+    const akutSpaetCell = row.insertCell();
+    const akutNachtCell = row.insertCell();
+    akutFruehCell.textContent = "-";
+    akutSpaetCell.textContent = "-";
+    akutNachtCell.textContent = "-";
+
+    akutRotationManager.activeAkutSlots.forEach(slot => {
+        const slotBlockStartDateClean = new Date(slot.blockStartDate.getFullYear(), slot.blockStartDate.getMonth(), slot.blockStartDate.getDate());
+        const dClean = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        const dayDifferenceFromBlockStart = Math.floor((dClean.getTime() - slotBlockStartDateClean.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (dayDifferenceFromBlockStart >= 0 && dayDifferenceFromBlockStart < 7) {
+            const doctorInSlot = doctors[slot.doctorIndex];
+            let canRotationsArztWorkWeekend = true;
+            if (currentWeekendID && doctorInSlot.lastWorkedWeekendIdentifier === previousWeekendID) {
+                canRotationsArztWorkWeekend = false;
+            }
+            let isRotationsArztWorkingAkutShiftToday = false;
+            if (doctorInSlot.urlaub.includes(dateStr)) { /* Urlaub */ }
+            else if (!canRotationsArztWorkWeekend && (wdNumber === 0 || wdNumber === 6) && 
+                       slot.currentPhase !== 'frei_zyklus' && 
+                       !(slot.currentPhase === 'spaet_block' && dayDifferenceFromBlockStart >= 5) ) { /* WE Regel */ }
+            else {
+                switch (slot.currentPhase) {
+                    case 'frueh':
+                        if (akutFruehCell.textContent === "-") { 
+                           akutFruehCell.textContent = doctorInSlot.name; isRotationsArztWorkingAkutShiftToday = true;
+                        } break;
+                    case 'spaet_block':
+                        if (dayDifferenceFromBlockStart < 5 && (wdNumber >= 1 && wdNumber <= 5)) { 
+                            if (akutSpaetCell.textContent === "-") {
+                                akutSpaetCell.textContent = doctorInSlot.name; isRotationsArztWorkingAkutShiftToday = true;
+                            }
+                        } else if (dayDifferenceFromBlockStart >= 5 && (wdNumber === 0 || wdNumber === 6)) { 
+                            if (arztInAkutFrei === "-") { 
+                                arztInAkutFrei = doctorInSlot.name; akutFreiDetail = "(SD-WE)";
+                            } assignedDoctorsToday.add(doctorInSlot.name); 
+                        } break;
+                    case 'nacht':
+                        if (akutNachtCell.textContent === "-") {
+                            akutNachtCell.textContent = doctorInSlot.name; isRotationsArztWorkingAkutShiftToday = true;
+                        } break;
+                    case 'frei_zyklus':
+                        if (arztInAkutFrei === "-") {
+                            arztInAkutFrei = doctorInSlot.name; akutFreiDetail = "(Zyklus)";
+                        } assignedDoctorsToday.add(doctorInSlot.name);
+                        break;
+                }
+                if(isRotationsArztWorkingAkutShiftToday) {
+                    assignedDoctorsToday.add(doctorInSlot.name);
+                    if (currentWeekendID) doctorInSlot.lastWorkedWeekendIdentifier = currentWeekendID;
+                }
+            }
+        }
+    });
+
+    const akutDiensteToFill = [
+        { cell: akutFruehCell, type: 'frueh', isWeekendShift: (wdNumber === 0 || wdNumber === 6 || (isHoliday && wdNumber !==0) )},
+        { cell: akutSpaetCell, type: 'spaet', isWeekendShift: false }, 
+        { cell: akutNachtCell, type: 'nacht', isWeekendShift: (wdNumber === 0 || wdNumber === 6 || (isHoliday && wdNumber !==0) )}
     ];
 
-    dienstTypenUndAnzahl.forEach(dienstInfo => {
-      for (let i = 0; i < dienstInfo.anzahl; i++) {
-        const cell = row.insertCell();
-        let verfuegbareAerzte = doctors.filter(doc => doc.can[dienstInfo.typ] && !doc.urlaub.includes(dateStr));
+    akutDiensteToFill.forEach(akutDienst => {
+        if (akutDienst.cell.textContent === "-") { 
+            if (akutDienst.type === 'spaet' && !(wdNumber >= 1 && wdNumber <= 5 && !isHoliday)) return; 
 
-        // Hier (oder davor) müsste die Logik für Arbeitszeitgesetze ansetzen:
-        // z.B. verfuegbareAerzte = verfuegbareAerzte.filter(doc => checkArbeitszeitUndRuhezeit(doc, dateStr, dienstInfo.typ));
-        // Dies würde individuelle Ärzte basierend auf ihren bisherigen Diensten und Arbeitszeiten filtern.
+            let backupCandidates = doctors.filter(doc => { 
+                let canWorkThisWeekendBackup = true;
+                if (akutDienst.isWeekendShift && currentWeekendID && doc.lastWorkedWeekendIdentifier === previousWeekendID) {
+                    canWorkThisWeekendBackup = false;
+                }
+                const isCurrentlyInActiveRotationNonFrei = akutRotationManager.activeAkutSlots.some(slot => {
+                    const dayDiff = Math.floor((d.getTime() - slot.blockStartDate.getTime()) / (1000 * 60 * 60 * 24));
+                    return slot.doctorIndex === doctors.indexOf(doc) && dayDiff >= 0 && dayDiff < 7 &&
+                           slot.currentPhase !== 'frei_zyklus' && 
+                           !(slot.currentPhase === 'spaet_block' && dayDiff >= 5);
+                });
 
-        const aerzteMitWunsch = verfuegbareAerzte.filter(doc => doc.wish[dienstInfo.typ]);
+                return doc.can.akut &&
+                       !doc.urlaub.includes(dateStr) &&
+                       !assignedDoctorsToday.has(doc.name) &&
+                       canWorkThisWeekendBackup &&
+                       !isCurrentlyInActiveRotationNonFrei; 
+            });
+            
+            let finalBackupDoctor = null;
+            const designatedBackupCandidates = backupCandidates.filter(doc => doc.isDesignatedForAkutRotation);
+            if (designatedBackupCandidates.length > 0) {
+                finalBackupDoctor = designatedBackupCandidates[0]; 
+            } else if (backupCandidates.length > 0) {
+                finalBackupDoctor = backupCandidates[0]; 
+            }
 
-        let ausgewaehlterArzt = null;
-        if (aerzteMitWunsch.length > 0) {
-          ausgewaehlterArzt = aerzteMitWunsch[Math.floor(Math.random() * aerzteMitWunsch.length)];
-        } else if (verfuegbareAerzte.length > 0) {
-          ausgewaehlterArzt = verfuegbareAerzte[Math.floor(Math.random() * verfuegbareAerzte.length)];
+            if (finalBackupDoctor) {
+                akutDienst.cell.textContent = finalBackupDoctor.name; 
+                assignedDoctorsToday.add(finalBackupDoctor.name);
+                if (akutDienst.isWeekendShift && currentWeekendID) { 
+                    if (wdNumber === 0 || wdNumber === 6) { 
+                        finalBackupDoctor.lastWorkedWeekendIdentifier = currentWeekendID;
+                    }
+                }
+            }
         }
-        
-        cell.textContent = ausgewaehlterArzt ? ausgewaehlterArzt.name : "-";
-      }
     });
+    
+    const isEffectivelySunday = (wdNumber === 0 || (isHoliday && wdNumber === 0));
+    const isEffectivelySaturday = (wdNumber === 6 || (isHoliday && wdNumber !== 0));
+
+    const stationSlotsToFill = (isEffectivelySaturday || isEffectivelySunday) ? 1 : 3; 
+    const stationCells = [];
+    for (let i = 0; i < 3; i++) { 
+        const cell = row.insertCell(); cell.textContent = "-"; stationCells.push(cell);
+    }
+
+    for (let i = 0; i < stationSlotsToFill; i++) {
+        let ausgewaehlterArztStation = null;
+        if (wdNumber === 0 && !isHoliday && weekendStationDoctorName) { 
+            const satDoctor = doctors.find(doc => doc.name === weekendStationDoctorName);
+            if (satDoctor && satDoctor.can["station"] && !satDoctor.urlaub.includes(dateStr) && !assignedDoctorsToday.has(satDoctor.name)) {
+                 let canSatDoctorWorkThisSunday = true;
+                 // The consecutive weekend check for satDoctor is implicitly handled by the general filter
+                 // if they were available for Saturday.
+                 if (canSatDoctorWorkThisSunday) ausgewaehlterArztStation = satDoctor;
+            }
+        }
+        if (!ausgewaehlterArztStation) { 
+            let verfuegbareAerzteStation = doctors.filter(doc => {
+                let canWorkThisWeekend = true;
+                if ((wdNumber === 0 || wdNumber === 6) && currentWeekendID && doc.lastWorkedWeekendIdentifier === previousWeekendID) { 
+                    canWorkThisWeekend = false;
+                }
+                return doc.can["station"] && !doc.urlaub.includes(dateStr) && !assignedDoctorsToday.has(doc.name) && canWorkThisWeekend;         
+            });
+            const aerzteMitWunschStation = verfuegbareAerzteStation.filter(doc => doc.wish["station"]);
+            if (aerzteMitWunschStation.length > 0) ausgewaehlterArztStation = aerzteMitWunschStation[Math.floor(Math.random() * aerzteMitWunschStation.length)];
+            else if (verfuegbareAerzteStation.length > 0) ausgewaehlterArztStation = verfuegbareAerzteStation[Math.floor(Math.random() * verfuegbareAerzteStation.length)];
+        }
+        if (ausgewaehlterArztStation) {
+            stationCells[i].textContent = ausgewaehlterArztStation.name; 
+            assignedDoctorsToday.add(ausgewaehlterArztStation.name); 
+            if (wdNumber === 0 || wdNumber === 6) { 
+                 if(currentWeekendID) ausgewaehlterArztStation.lastWorkedWeekendIdentifier = currentWeekendID;
+            }
+            if (wdNumber === 6) weekendStationDoctorName = ausgewaehlterArztStation.name;
+        }
+    }
+     if (wdNumber !== 6) weekendStationDoctorName = null;
+    
+    const orderedOtherServiceKeys = ["sono", "pd", "dialyse", "ambulanz"];
+    orderedOtherServiceKeys.forEach(serviceTyp => {
+        let anzahlForThisServiceToday = 0;
+        if (serviceTyp === "sono") anzahlForThisServiceToday = 1; 
+        if (serviceTyp === "pd") anzahlForThisServiceToday = (isEffectivelySaturday || isEffectivelySunday) ? 0 : 1;
+        if (serviceTyp === "dialyse") anzahlForThisServiceToday = isEffectivelySunday ? 0 : 1; 
+        if (serviceTyp === "ambulanz") anzahlForThisServiceToday = (isEffectivelySaturday || isEffectivelySunday) ? 0 : 1;
+
+        const cell = row.insertCell(); 
+        if (anzahlForThisServiceToday > 0) {
+            let verfuegbareAerzte = doctors.filter(doc => {
+                let canWorkThisWeekend = true;
+                if ((wdNumber === 0 || wdNumber === 6) && currentWeekendID && doc.lastWorkedWeekendIdentifier === previousWeekendID) {
+                    canWorkThisWeekend = false;
+                }
+                return doc.can[serviceTyp] && !doc.urlaub.includes(dateStr) && !assignedDoctorsToday.has(doc.name) && canWorkThisWeekend;         
+            });
+            const aerzteMitWunsch = verfuegbareAerzte.filter(doc => doc.wish[serviceTyp]);
+            let ausgewaehlterArzt = null;
+            if (aerzteMitWunsch.length > 0) ausgewaehlterArzt = aerzteMitWunsch[Math.floor(Math.random() * aerzteMitWunsch.length)];
+            else if (verfuegbareAerzte.length > 0) ausgewaehlterArzt = verfuegbareAerzte[Math.floor(Math.random() * verfuegbareAerzte.length)];
+            
+            cell.textContent = ausgewaehlterArzt ? ausgewaehlterArzt.name : "-";
+            if (ausgewaehlterArzt) {
+                assignedDoctorsToday.add(ausgewaehlterArzt.name); 
+                if ((wdNumber === 0 || wdNumber === 6) && currentWeekendID) { 
+                     ausgewaehlterArzt.lastWorkedWeekendIdentifier = currentWeekendID;
+                }
+            }
+        } else {
+            cell.textContent = "-"; 
+        }
+    });
+
+    const urlaubCell = row.insertCell();
+    const aerzteImUrlaub = doctors.filter(doc => doc.urlaub.includes(dateStr)).map(doc => doc.name);
+    urlaubCell.textContent = aerzteImUrlaub.join(", ") || "-";
+    if (aerzteImUrlaub.length > 0) urlaubCell.classList.add("highlight-urlaub");
+
+    const akutFreiCell = row.insertCell();
+    let freiText = arztInAkutFrei;
+    if (arztInAkutFrei !== "-" && akutFreiDetail) freiText = `${arztInAkutFrei} <span class="akut-frei-detail">${akutFreiDetail}</span>`;
+    else if (arztInAkutFrei === "-") freiText = "-";
+    akutFreiCell.innerHTML = freiText; 
+    if (arztInAkutFrei !== "-") akutFreiCell.classList.add("highlight-akut-frei");
+    
+    advanceAkutRotation(new Date(d)); 
   }
 }
 </script>
-
 </body>
 </html>
